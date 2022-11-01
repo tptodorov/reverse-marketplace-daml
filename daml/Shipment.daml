@@ -1,0 +1,56 @@
+module Shipment where
+
+import Cash
+
+template ShipmentProposal
+  -- single use shippment offer by courier to handle specific order
+  with 
+    buyer: Party
+    supplier: Party
+    courier: Party
+    reference: Text
+    shippingCost: Cash
+     -- TODO more details about shipment content, weight, valume, origin and destination of shipment
+  where 
+    signatory courier
+    observer supplier, buyer
+
+    choice ShipmentProposal_Accepted
+    -- supplier accepts the shipment contract
+      : ContractId Shipment
+      controller supplier
+      do
+        create Shipment
+          with reference, buyer, supplier, courier, shippingCost, tracking = None
+
+template Shipment
+-- A Contract between courier and supplier for shipment of an order from source to destination
+  with 
+    reference: Text
+    buyer: Party
+    supplier: Party
+    courier: Party
+    shippingCost: Cash
+    tracking: Optional Text
+  where 
+    signatory supplier, courier
+    observer buyer
+    ensure shippingCost.amount > 0.0 
+
+    key (reference, supplier) : (Text, Party)
+    maintainer key._2
+
+    choice Shipment_Tracked
+      : ContractId Shipment
+      with  trackingUpdate: Text
+      controller courier
+      do
+        create this 
+          with tracking = Some trackingUpdate
+
+    choice Archives
+        : ()
+        controller courier
+        do 
+          pure ()
+    

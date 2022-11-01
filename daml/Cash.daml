@@ -1,0 +1,9 @@
+module Cash where
+
+data CCY = EUR | USD
+    deriving (Eq, Show)
+
+data Cash = Cash with
+  currency : CCY
+  amount : Decimal
+    deriving (Eq, Show)

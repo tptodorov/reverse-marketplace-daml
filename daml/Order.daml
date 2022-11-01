@@ -1,0 +1,123 @@
+module Order where
+
+import Cash
+import Shipment
+import DA.Date
+
+-- unique orderid shared between actors
+type OrderID = Text
+
+template RFQ
+-- Request For Quote - what the buyer wants to get manufactured
+  with
+    buyer: Party
+    suppliers: [Party]
+    product: Text
+    units: Decimal
+    deadline: Date
+  where
+    signatory buyer
+    observer suppliers
+    ensure units > 0.0 && product /= ""
+
+template Quote
+  with
+    rfqCid: ContractId RFQ -- the quote is only for the particular RFQ instance
+    offer: Order
+  where
+    signatory offer.supplier
+    observer offer.buyer
+
+    nonconsuming choice Quote_TotalCost
+      : Cash
+      controller offer.buyer
+      do
+        shipmentProposal <- fetch offer.shipmentProposalCid
+        assert (shipmentProposal.shippingCost.currency == offer.cost.currency)
+        return offer.cost with amount = offer.cost.amount + shipmentProposal.shippingCost.amount
+
+    nonconsuming choice Quote_Accept
+      -- Buyer Accepts Quote and Places an Order
+        : ContractId Order
+        controller offer.buyer
+        do
+          -- ensure RFQ is still active
+          _ <- fetch @RFQ rfqCid
+          create offer with status = PRODUCTION
+
+    choice Quote_Decline : ()
+      -- Buyer Declines Quote
+      controller offer.buyer
+      do pure ()
+
+    choice Quote_Withdraw : ()
+      -- Supplier Withdraw 
+      controller offer.supplier
+      do pure ()
+
+
+
+
+data OrderStatus = NEW | PRODUCTION | SHIPPED | DELIVERED | FAILED
+  deriving (Eq, Show)
+
+template Order
+  with
+    id: OrderID -- unique key for supplier
+    buyer : Party
+    supplier: Party
+    product: Text -- SKU or product description
+    units: Decimal
+    deadline: Date
+    cost: Cash
+    intermediaries: [Party] -- shipping, warehouse, insurance companies observing the transaction
+    status: OrderStatus
+    shipmentProposalCid: ContractId ShipmentProposal
+    -- TODO other Order details
+  where
+    signatory buyer, supplier
+    observer intermediaries
+
+    key (id, supplier) : (Text, Party)
+    maintainer key._2
+
+    nonconsuming choice Order_TotalCost
+      : Cash
+      controller buyer
+      do
+        shipmentProposal <- fetch shipmentProposalCid
+        assert (shipmentProposal.shippingCost.currency == cost.currency)
+        return cost with amount = cost.amount + shipmentProposal.shippingCost.amount
+
+    choice Order_Shipped
+    -- shipping the order with the prepared courier and shipment contract 
+      : ContractId Order
+      controller supplier
+      do
+        assert(status == PRODUCTION)
+        -- create shipment contract instance on shipping
+        shipmentCid <- exercise shipmentProposalCid ShipmentProposal_Accepted
+        shipment <- fetch shipmentCid
+        create this 
+          with intermediaries = shipment.courier :: intermediaries, status = SHIPPED
+
+    choice Order_Delivered
+      : ContractId Order
+      controller buyer
+      do 
+        assert(status == SHIPPED)
+        now <- getTime
+        let today = toDateUTC now
+        let status = if today > deadline then FAILED else DELIVERED
+        create this 
+          with status
+
+    choice Order_Expired
+    -- triggered by expiration of order deadline
+      : ContractId Order
+      controller buyer
+      do 
+        now <- getTime
+        create this 
+          with status = FAILED
+
